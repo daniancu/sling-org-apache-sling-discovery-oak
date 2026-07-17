@@ -24,7 +24,11 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -44,6 +48,7 @@ import org.apache.sling.discovery.base.its.setup.mock.DummyResourceResolverFacto
 import org.apache.sling.discovery.base.its.setup.mock.MockFactory;
 import org.apache.sling.discovery.base.its.setup.mock.PropertyProviderImpl;
 import org.apache.sling.discovery.commons.providers.BaseTopologyView;
+import org.apache.sling.discovery.commons.providers.ViewStateManager;
 import org.apache.sling.discovery.commons.providers.base.DummyListener;
 import org.apache.sling.discovery.commons.providers.spi.base.DescriptorHelper;
 import org.apache.sling.discovery.commons.providers.spi.base.DiscoveryLiteConfig;
@@ -60,6 +65,7 @@ import org.apache.sling.discovery.oak.its.setup.SimulatedLeaseCollection;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.osgi.framework.Bundle;
 import org.osgi.framework.Constants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -453,6 +459,141 @@ public class OakDiscoveryServiceTest {
         discoveryService.bindPropertyProvider(p, m);
         discoveryService.unbindPropertyProvider(p, m);
         discoveryService.updatedPropertyProvider(p, m);
+    }
+
+    /**
+     * After deactivate(): isShuttingDown() latches true and subsequent
+     * PropertyProvider callbacks do not reach the ResourceResolverFactory.
+     */
+    @Test
+    public void testIsShuttingDownAfterDeactivate() throws Exception {
+        OakDiscoveryService ds = new OakDiscoveryService();
+
+        // Wire only what deactivate() and the property-provider callbacks touch.
+        ViewStateManager vsmMock = mock(ViewStateManager.class);
+        Field vsmField = OakDiscoveryService.class.getDeclaredField("viewStateManager");
+        vsmField.setAccessible(true);
+        vsmField.set(ds, vsmMock);
+
+        ResourceResolverFactory rrfMock = mock(ResourceResolverFactory.class);
+        Field rrfField = OakDiscoveryService.class.getDeclaredField("resourceResolverFactory");
+        rrfField.setAccessible(true);
+        rrfField.set(ds, rrfMock);
+
+        assertFalse(ds.isShuttingDown());
+
+        ds.deactivate();
+        assertTrue(ds.isShuttingDown());
+
+        PropertyProviderImpl provider = new PropertyProviderImpl();
+        Map<String, Object> props = new HashMap<>();
+        props.put(Constants.SERVICE_ID, 42L);
+        ds.bindPropertyProvider(provider, props);
+        ds.updatedPropertyProvider(provider, props);
+        ds.unbindPropertyProvider(provider, props);
+
+        verifyNoInteractions(rrfMock);
+    }
+
+    /**
+     * The inline system-bundle-state check catches framework shutdown before
+     * deactivate() runs, and latches on first observation.
+     */
+    @Test
+    public void testInlineSystemBundleStateFallback() throws Exception {
+        OakDiscoveryService ds = new OakDiscoveryService();
+
+        Bundle systemBundleMock = mock(Bundle.class);
+        ds.setSystemBundleForTesting(systemBundleMock);
+
+        when(systemBundleMock.getState()).thenReturn(Bundle.ACTIVE);
+        assertFalse(ds.isShuttingDown());
+
+        when(systemBundleMock.getState()).thenReturn(Bundle.STOPPING);
+        assertTrue(ds.isShuttingDown());
+
+        // latched: state flipping back to ACTIVE must not un-shut-down
+        when(systemBundleMock.getState()).thenReturn(Bundle.ACTIVE);
+        assertTrue(ds.isShuttingDown());
+    }
+
+    /**
+     * An invalidated system bundle reference (IllegalStateException on
+     * getState) is treated as shutting down.
+     */
+    @Test
+    public void testInvalidatedSystemBundleTreatedAsShuttingDown() throws Exception {
+        OakDiscoveryService ds = new OakDiscoveryService();
+
+        Bundle systemBundleMock = mock(Bundle.class);
+        when(systemBundleMock.getState()).thenThrow(new IllegalStateException("bundle invalidated"));
+        ds.setSystemBundleForTesting(systemBundleMock);
+
+        assertTrue(ds.isShuttingDown());
+    }
+
+    /**
+     * If our BundleContext is already invalidated at activation,
+     * cacheSystemBundle latches {@code deactivating} immediately.
+     */
+    @Test
+    public void testCacheSystemBundleWithInvalidatedContextLatchesDeactivating() {
+        OakDiscoveryService ds = new OakDiscoveryService();
+
+        assertFalse(ds.isShuttingDown());
+
+        Bundle ourBundleMock = mock(Bundle.class);
+        when(ourBundleMock.getBundleContext())
+                .thenThrow(new IllegalStateException("our context invalidated"));
+
+        ds.cacheSystemBundle(ourBundleMock);
+
+        assertTrue(ds.isShuttingDown());
+    }
+
+    /**
+     * End-to-end: with the service still activated but the system bundle
+     * STOPPING, PropertyProvider callbacks must not reach the
+     * ResourceResolverFactory.
+     */
+    @Test
+    public void testActivatedServiceSkipsResourceResolverWhenSystemBundleStopping() throws Exception {
+        OakVirtualInstanceBuilder builder = (OakVirtualInstanceBuilder) new OakVirtualInstanceBuilder()
+                .setDebugName("shutdown-rrf-guard")
+                .newRepository("/foo/shutdown-rrf/", true)
+                .setConnectorPingInterval(999999)
+                .setConnectorPingTimeout(999999);
+        builder.getConfig().setSuppressPartiallyStartedInstance(true);
+        VirtualInstance instance = builder.build();
+        try {
+            OakDiscoveryService ds = (OakDiscoveryService) instance.getDiscoveryService();
+
+            assertFalse(ds.isShuttingDown());
+
+            ResourceResolverFactory rrfMock = mock(ResourceResolverFactory.class);
+            Field rrfField = OakDiscoveryService.class.getDeclaredField("resourceResolverFactory");
+            rrfField.setAccessible(true);
+            rrfField.set(ds, rrfMock);
+
+            Bundle systemBundleMock = mock(Bundle.class);
+            when(systemBundleMock.getState()).thenReturn(Bundle.STOPPING);
+            ds.setSystemBundleForTesting(systemBundleMock);
+
+            // Do NOT pre-latch by calling isShuttingDown() here - the guard
+            // inside doUpdateProperties() must be the one to short-circuit,
+            // otherwise removing that guard would still leave the test green.
+
+            PropertyProviderImpl provider = new PropertyProviderImpl();
+            Map<String, Object> props = new HashMap<>();
+            props.put(Constants.SERVICE_ID, 42L);
+            ds.bindPropertyProvider(provider, props);
+            ds.updatedPropertyProvider(provider, props);
+            ds.unbindPropertyProvider(provider, props);
+
+            verifyNoInteractions(rrfMock);
+        } finally {
+            instance.stop();
+        }
     }
 
     @Test

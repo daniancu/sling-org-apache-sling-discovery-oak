@@ -64,8 +64,10 @@ import org.apache.sling.discovery.commons.providers.util.PropertyNameHelper;
 import org.apache.sling.discovery.commons.providers.util.ResourceHelper;
 import org.apache.sling.discovery.oak.pinger.OakViewChecker;
 import org.apache.sling.settings.SlingSettingsService;
+import org.osgi.framework.Bundle;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.Constants;
+import org.osgi.framework.FrameworkUtil;
 import org.osgi.framework.ServiceRegistration;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
@@ -104,6 +106,17 @@ public class OakDiscoveryService extends BaseDiscoveryService {
      * events to discovery awares before activate is done
      **/
     private volatile boolean activated = false;
+
+    /**
+     * Latched to {@code true} once this component or the OSGi framework begins
+     * shutting down. See {@link #isShuttingDown()}.
+     */
+    private volatile boolean deactivating = false;
+
+    /**
+     * Cached system bundle (bundle 0), resolved once at activation.
+     */
+    private volatile Bundle systemBundle;
 
     @Reference
     private ResourceResolverFactory resourceResolverFactory;
@@ -214,6 +227,8 @@ public class OakDiscoveryService extends BaseDiscoveryService {
     protected void activate(final BundleContext bundleContext) {
         logger.debug("OakDiscoveryService activating...");
 
+        cacheSystemBundle();
+
         if (settingsService == null) {
             throw new IllegalStateException("settingsService not found");
         }
@@ -319,6 +334,9 @@ public class OakDiscoveryService extends BaseDiscoveryService {
      */
     @Deactivate
     protected void deactivate() {
+        // set before acquiring any lock so concurrent PropertyProvider
+        // callbacks short-circuit in doUpdateProperties()
+        deactivating = true;
         logger.debug("OakDiscoveryService deactivated.");
         viewStateManagerLock.lock();
         try {
@@ -479,6 +497,10 @@ public class OakDiscoveryService extends BaseDiscoveryService {
      * @see Config#getClusterInstancesPath()
      */
     private void doUpdateProperties() {
+        if (isShuttingDown()) {
+            logger.debug("doUpdateProperties: skipping property update - service or framework is shutting down");
+            return;
+        }
         // SLING-5382 : the caller must ensure that this method
         // is not invoked after deactivation or before activation.
         // so this method doesn't have to do any further synchronization.
@@ -578,6 +600,80 @@ public class OakDiscoveryService extends BaseDiscoveryService {
             logger.debug("updateProperties: calling handlePotentialTopologyChange.");
             checkForTopologyChange();
             logger.debug("updateProperties: done.");
+        }
+    }
+
+    /**
+     * Returns {@code true} when this component or the framework is shutting
+     * down. Latches {@link #deactivating} on first observation so subsequent
+     * calls are a single volatile read. Package-private for unit testing.
+     */
+    boolean isShuttingDown() {
+        if (deactivating) {
+            return true;
+        }
+        final Bundle sb = systemBundle;
+        if (sb == null) {
+            return false;
+        }
+        try {
+            final int state = sb.getState();
+            if (state == Bundle.STOPPING
+                    || state == Bundle.RESOLVED
+                    || state == Bundle.INSTALLED
+                    || state == Bundle.UNINSTALLED) {
+                deactivating = true;
+                logger.info("isShuttingDown: system bundle state {} observed - "
+                        + "OakDiscoveryService will skip further property writes", state);
+                return true;
+            }
+        } catch (IllegalStateException e) {
+            deactivating = true;
+            logger.info("isShuttingDown: system bundle reference invalidated - "
+                    + "OakDiscoveryService will skip further property writes");
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Test-only hook to install a system-bundle reference without going
+     * through {@link #cacheSystemBundle()}.
+     */
+    void setSystemBundleForTesting(final Bundle bundle) {
+        this.systemBundle = bundle;
+    }
+
+    private void cacheSystemBundle() {
+        cacheSystemBundle(FrameworkUtil.getBundle(OakDiscoveryService.class));
+    }
+
+    /**
+     * Package-private overload taking the caller-bundle explicitly, so unit
+     * tests can exercise the {@link BundleContext} failure branches without
+     * an OSGi framework.
+     */
+    void cacheSystemBundle(final Bundle ourBundle) {
+        if (ourBundle == null) {
+            logger.debug("cacheSystemBundle: no OSGi framework detected via FrameworkUtil"
+                    + " - shutdown detection degrades to deactivate() only");
+            return;
+        }
+        try {
+            final BundleContext ctx = ourBundle.getBundleContext();
+            if (ctx == null) {
+                logger.debug("cacheSystemBundle: our BundleContext is null"
+                        + " - shutdown detection degrades to deactivate() only");
+                return;
+            }
+            systemBundle = ctx.getBundle(0);
+        } catch (IllegalStateException e) {
+            logger.warn("cacheSystemBundle: BundleContext already invalidated at activation"
+                    + " - marking discovery as deactivating immediately: {}", e.toString());
+            deactivating = true;
+        } catch (RuntimeException e) {
+            logger.warn("cacheSystemBundle: could not resolve system bundle - shutdown detection"
+                    + " has degraded to deactivate() only: {}", e.toString());
         }
     }
 
