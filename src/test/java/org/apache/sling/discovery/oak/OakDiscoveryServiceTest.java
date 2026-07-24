@@ -66,6 +66,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.osgi.framework.Bundle;
+import org.osgi.framework.BundleContext;
 import org.osgi.framework.Constants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -500,7 +501,7 @@ public class OakDiscoveryServiceTest {
      * deactivate() runs, and latches on first observation.
      */
     @Test
-    public void testInlineSystemBundleStateFallback() throws Exception {
+    public void testInlineSystemBundleStateFallback() {
         OakDiscoveryService ds = new OakDiscoveryService();
 
         Bundle systemBundleMock = mock(Bundle.class);
@@ -522,7 +523,7 @@ public class OakDiscoveryServiceTest {
      * getState) is treated as shutting down.
      */
     @Test
-    public void testInvalidatedSystemBundleTreatedAsShuttingDown() throws Exception {
+    public void testInvalidatedSystemBundleTreatedAsShuttingDown() {
         OakDiscoveryService ds = new OakDiscoveryService();
 
         Bundle systemBundleMock = mock(Bundle.class);
@@ -549,6 +550,84 @@ public class OakDiscoveryServiceTest {
         ds.cacheSystemBundle(ourBundleMock);
 
         assertTrue(ds.isShuttingDown());
+    }
+
+    /**
+     * Happy path: cacheSystemBundle resolves the system bundle via our
+     * BundleContext and subsequent isShuttingDown() calls consult it.
+     */
+    @Test
+    public void testCacheSystemBundleHappyPath() {
+        OakDiscoveryService ds = new OakDiscoveryService();
+
+        Bundle systemBundleMock = mock(Bundle.class);
+        when(systemBundleMock.getState()).thenReturn(Bundle.ACTIVE);
+
+        BundleContext ctxMock = mock(BundleContext.class);
+        when(ctxMock.getBundle(0)).thenReturn(systemBundleMock);
+
+        Bundle ourBundleMock = mock(Bundle.class);
+        when(ourBundleMock.getBundleContext()).thenReturn(ctxMock);
+
+        ds.cacheSystemBundle(ourBundleMock);
+
+        assertFalse(ds.isShuttingDown());
+
+        when(systemBundleMock.getState()).thenReturn(Bundle.STOPPING);
+        assertTrue(ds.isShuttingDown());
+    }
+
+    /**
+     * If our BundleContext is null (bundle stopped mid-activation),
+     * cacheSystemBundle degrades silently: no latch, no NPE.
+     */
+    @Test
+    public void testCacheSystemBundleWithNullBundleContext() {
+        OakDiscoveryService ds = new OakDiscoveryService();
+
+        Bundle ourBundleMock = mock(Bundle.class);
+        when(ourBundleMock.getBundleContext()).thenReturn(null);
+
+        ds.cacheSystemBundle(ourBundleMock);
+
+        assertFalse(ds.isShuttingDown());
+    }
+
+    /**
+     * A non-IllegalStateException RuntimeException from getBundleContext()
+     * is logged and swallowed - shutdown detection degrades to deactivate()
+     * only, but the service does not latch as shutting down.
+     */
+    @Test
+    public void testCacheSystemBundleWithGenericRuntimeException() {
+        OakDiscoveryService ds = new OakDiscoveryService();
+
+        Bundle ourBundleMock = mock(Bundle.class);
+        when(ourBundleMock.getBundleContext())
+                .thenThrow(new SecurityException("denied"));
+
+        ds.cacheSystemBundle(ourBundleMock);
+
+        assertFalse(ds.isShuttingDown());
+    }
+
+    /**
+     * All non-live system bundle states (RESOLVED, INSTALLED, UNINSTALLED)
+     * are treated as shutting down, not just STOPPING.
+     */
+    @Test
+    public void testInlineSystemBundleStateFallbackAllTerminalStates() {
+        int[] terminalStates = { Bundle.RESOLVED, Bundle.INSTALLED, Bundle.UNINSTALLED };
+        for (int state : terminalStates) {
+            OakDiscoveryService ds = new OakDiscoveryService();
+
+            Bundle systemBundleMock = mock(Bundle.class);
+            when(systemBundleMock.getState()).thenReturn(state);
+            ds.setSystemBundleForTesting(systemBundleMock);
+
+            assertTrue("state " + state + " should be treated as shutting down",
+                    ds.isShuttingDown());
+        }
     }
 
     /**
