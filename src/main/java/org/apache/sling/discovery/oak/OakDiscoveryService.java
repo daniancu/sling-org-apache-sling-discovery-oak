@@ -542,14 +542,10 @@ public class OakDiscoveryService extends BaseDiscoveryService {
 
     private void removeStaleKeys(final ModifiableValueMap map, final Set<String> newKeys) {
         for (final String key : new HashSet<>(map.keySet())) {
-            if (newKeys.contains(key)) {
-                continue;
+            // skip keys still present in newKeys, and namespaced keys
+            if (!newKeys.contains(key) && key.indexOf(':') == -1) {
+                map.remove(key);
             }
-            if (key.indexOf(':') != -1) {
-                // ignore namespaced keys
-                continue;
-            }
-            map.remove(key);
         }
     }
 
