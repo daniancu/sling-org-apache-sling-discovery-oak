@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.sling.api.resource.LoginException;
@@ -116,7 +117,7 @@ public class OakDiscoveryService extends BaseDiscoveryService {
     /**
      * Cached system bundle (bundle 0), resolved once at activation.
      */
-    private volatile Bundle systemBundle;
+    private final AtomicReference<Bundle> systemBundle = new AtomicReference<>();
 
     @Reference
     private ResourceResolverFactory resourceResolverFactory;
@@ -612,7 +613,7 @@ public class OakDiscoveryService extends BaseDiscoveryService {
         if (deactivating) {
             return true;
         }
-        final Bundle sb = systemBundle;
+        final Bundle sb = systemBundle.get();
         if (sb == null) {
             return false;
         }
@@ -641,7 +642,7 @@ public class OakDiscoveryService extends BaseDiscoveryService {
      * through {@link #cacheSystemBundle()}.
      */
     void setSystemBundleForTesting(final Bundle bundle) {
-        this.systemBundle = bundle;
+        this.systemBundle.set(bundle);
     }
 
     private void cacheSystemBundle() {
@@ -666,7 +667,7 @@ public class OakDiscoveryService extends BaseDiscoveryService {
                         + " - shutdown detection degrades to deactivate() only");
                 return;
             }
-            systemBundle = ctx.getBundle(0);
+            systemBundle.set(ctx.getBundle(0));
         } catch (IllegalStateException e) {
             logger.warn("cacheSystemBundle: BundleContext already invalidated at activation"
                     + " - marking discovery as deactivating immediately: {}", e.toString());
