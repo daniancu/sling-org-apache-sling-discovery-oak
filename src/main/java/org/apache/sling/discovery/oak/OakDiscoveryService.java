@@ -511,9 +511,7 @@ public class OakDiscoveryService extends BaseDiscoveryService {
 
     private void persistProperties(final ResourceResolverFactory rrf, final Config c, final String sid,
                                    final Map<String, String> newProps) {
-        ResourceResolver resourceResolver = null;
-        try {
-            resourceResolver = rrf.getServiceResourceResolver(null);
+        try (ResourceResolver resourceResolver = rrf.getServiceResourceResolver(null)) {
 
             Resource myInstance = ResourceHelper
                     .getOrCreateResource(resourceResolver, c.getClusterInstancesPath() + "/" + sid + "/properties");
@@ -528,15 +526,11 @@ public class OakDiscoveryService extends BaseDiscoveryService {
                 resourceResolver.commit();
             }
         } catch (LoginException e) {
-            logger.error("doUpdateProperties: could not log in administratively: " + e, e);
+            logger.error("persistProperties: could not log in administratively: " + e, e);
             throw new RuntimeException("Could not log in to repository (" + e + ")", e);
         } catch (PersistenceException e) {
-            logger.error("doUpdateProperties: got a PersistenceException: " + e, e);
+            logger.error("persistProperties: got a PersistenceException: " + e, e);
             throw new RuntimeException("Exception while talking to repository (" + e + ")", e);
-        } finally {
-            if (resourceResolver != null) {
-                resourceResolver.close();
-            }
         }
     }
 
