@@ -28,6 +28,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
@@ -520,7 +521,9 @@ public class OakDiscoveryService extends BaseDiscoveryService {
             resourceResolver.revert();
             resourceResolver.refresh();
 
-            final ModifiableValueMap myInstanceMap = myInstance.adaptTo(ModifiableValueMap.class);
+            final ModifiableValueMap myInstanceMap = Objects.requireNonNull(
+                    myInstance.adaptTo(ModifiableValueMap.class),
+                    "adaptTo(ModifiableValueMap.class) returned null");
             removeStaleKeys(myInstanceMap, newProps.keySet());
             if (applyNewProperties(myInstanceMap, newProps)) {
                 resourceResolver.commit();
