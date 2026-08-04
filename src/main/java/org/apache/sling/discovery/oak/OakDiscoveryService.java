@@ -526,10 +526,10 @@ public class OakDiscoveryService extends BaseDiscoveryService {
                 resourceResolver.commit();
             }
         } catch (LoginException e) {
-            logger.error("persistProperties: could not log in administratively: " + e, e);
+            logger.error("persistProperties: could not log in administratively: {}", e, e);
             throw new RuntimeException("Could not log in to repository (" + e + ")", e);
         } catch (PersistenceException e) {
-            logger.error("persistProperties: got a PersistenceException: " + e, e);
+            logger.error("persistProperties: got a PersistenceException: {}", e, e);
             throw new RuntimeException("Exception while talking to repository (" + e + ")", e);
         }
     }
