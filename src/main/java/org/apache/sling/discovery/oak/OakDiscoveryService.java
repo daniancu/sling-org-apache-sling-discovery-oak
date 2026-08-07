@@ -338,7 +338,7 @@ public class OakDiscoveryService extends BaseDiscoveryService {
         // set before acquiring any lock so concurrent PropertyProvider
         // callbacks short-circuit in doUpdateProperties()
         deactivating = true;
-        logger.debug("OakDiscoveryService deactivated.");
+        logger.info("OakDiscoveryService deactivated, further updates will be suppressed");
         viewStateManagerLock.lock();
         try {
             viewStateManager.unbind(changePropagationListener);
@@ -631,7 +631,7 @@ public class OakDiscoveryService extends BaseDiscoveryService {
         } catch (IllegalStateException e) {
             deactivating = true;
             logger.info("isShuttingDown: system bundle reference invalidated - "
-                    + "OakDiscoveryService will skip further property writes");
+                    + "OakDiscoveryService will skip further property writes : {}", e.toString());
             return true;
         }
         return false;
@@ -656,14 +656,14 @@ public class OakDiscoveryService extends BaseDiscoveryService {
      */
     void cacheSystemBundle(final Bundle ourBundle) {
         if (ourBundle == null) {
-            logger.debug("cacheSystemBundle: no OSGi framework detected via FrameworkUtil"
+            logger.info("cacheSystemBundle: no OSGi framework detected via FrameworkUtil"
                     + " - shutdown detection degrades to deactivate() only");
             return;
         }
         try {
             final BundleContext ctx = ourBundle.getBundleContext();
             if (ctx == null) {
-                logger.debug("cacheSystemBundle: our BundleContext is null"
+                logger.info("cacheSystemBundle: our BundleContext is null"
                         + " - shutdown detection degrades to deactivate() only");
                 return;
             }
